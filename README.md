@@ -2,4 +2,5 @@ Please review the code in Unionization analysis V3.Rmd. The results can be check
 - 26% of Southern workers earn less than $17 per hour
 - In 2024, retail industry jobs alone made up nearly 16 percent of all Southern employment
 - Data for figures 1 and 2 in unionionization_analysis_8.13.xlsx
+  
 Thank you!
