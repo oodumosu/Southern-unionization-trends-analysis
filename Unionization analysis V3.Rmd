@@ -1,0 +1,400 @@
+---
+title: "Unionization Analaysis V3"
+author: "Kemi Odumosu"
+date: "8/15/25"
+output: pdf_document
+---
+
+# Setup
+```{r, include=FALSE}
+
+library(tidyverse)
+library(openxlsx)
+library(usdata)
+
+```
+
+# Share of Southern Workers under $17/hr. Data from EPI: https://www.epi.org/low-wage-workforce/
+```{r}
+
+read.csv("workers under 17.hr by state.csv") %>% 
+  filter(low_wage_threshold == 17) %>%
+  filter(state_abb %in% c("DE", "DC", "FL", "GA", "MD", "NC", "SC", "VA", "WV", "AL", "KY", "MS", "TN", "AR", "LA", "OK", "TX")) %>%
+  group_by(state_abb) %>%
+  summarise(total_workers = sum(low_wage_count/low_wage_share, na.rm = TRUE),
+            low_wage_count = low_wage_count) %>%
+  summarise(num_under_17 = sum(low_wage_count, na.rm = TRUE), # 14,209,000 Southern workers make under $17/hr
+            total_southern_workers = sum(total_workers, na.rm = TRUE)) # 54,152,973 total Southern workers
+
+14209000/54152973 # 26.24% of Southern workers earn less than $17 per hour
+
+```
+
+# Union election analysis. Data from National Labor Relations Board: https://www.nlrb.gov/reports/agency-performance/election-reports
+```{r}
+
+# Import data
+df <- read.csv("all_elections_1.19_12.24.csv") %>% as.data.frame() %>% 
+  select(-c(Case.ID, Case.Type))
+
+# colnames(df2)
+
+df2 <- read.csv("all_voluntary_recognitions.csv") %>% as.data.frame() 
+```
+
+## Cleaning
+```{r}
+
+# Check that every observation (case number) is unique
+nrow(df) - length(unique(df$Case.Number)) # 11 (10) non-unique case numbers
+
+# Filter duplicate case numbers with elections held on the same day to the obs with more eligible voters and/or closed most recently
+ filtered_cases <- df %>% 
+  filter(duplicated(df[, "Case.Number"])) %>% 
+  arrange(Case.Number, desc(Num.Eligible.Voters), desc(Closed.Date)) %>% 
+  group_by(Case.Number, Election.Held.Date) %>% 
+  slice(1) %>% 
+  ungroup()
+
+# Remove duplicate cases and replace with only one obs for each case number
+df <- df %>%
+  filter(!Case.Number %in% filtered_cases$Case.Number) %>% bind_rows(filtered_cases)
+  
+# Check
+nrow(df) - length(unique(df$Case.Number)) # 0 non-unique case numbers
+```
+
+
+```{r}
+
+# Fill in 0s for NA Votes.for.Labor.Org.2 and Votes.For.Labor.Org3
+df <- df %>%
+  mutate(
+    Votes.for.Labor.Org.2 = ifelse(is.na(Votes.for.Labor.Org.2), 0, Votes.for.Labor.Org.2),
+    Votes.For.Labor.Org3 = ifelse(is.na(Votes.For.Labor.Org3), 0, Votes.For.Labor.Org3)
+  )
+
+# Check that Num Eligible Voters >= Valid Votes Against + Votes for Labor Org 1 + Votes for Labor Org 2 + Votes For Labor Org3
+df %>%
+  filter(Num.Eligible.Voters < (Valid.Votes.Against + Votes.for.Labor.Org.1 + Votes.for.Labor.Org.2 + Votes.For.Labor.Org3)) # 36 obs to remove
+
+# df with invalid rows removed. 6,531 obs remaining
+df <- df %>%
+  filter(Num.Eligible.Voters >= (Valid.Votes.Against + Votes.for.Labor.Org.1 + Votes.for.Labor.Org.2 + Votes.For.Labor.Org3))
+
+
+```
+
+```{r}
+
+# Create a year variable using election closed date 
+df <- df %>% mutate(Unionized.Year = str_extract(df$Closed.Date, "\\d{4}")) # TODO 17 MISSING. Remove obs not in 2019-2024
+
+# Create a categorical region variable
+df$Region <- ifelse(df$Dispute.Unit.State %in% c("CT", "ME", "MA", "NH", "RI", "VT", "NJ", "NY", "PA"), "Northeast",
+                    ifelse(df$Dispute.Unit.State %in% c("IL", "IN", "MI", "OH", "WI", "IA", "KS", "MN", "MO", "NE", "ND", "SD"), "Midwest",
+                    ifelse(df$Dispute.Unit.State %in% c("DE", "DC", "FL", "GA", "MD", "NC", "SC", "VA", "WV", "AL", "KY", "MS", "TN", "AR", "LA", "OK", "TX"), "South",
+                    ifelse(df$Dispute.Unit.State %in% c("AZ", "CO", "ID", "MT", "NV", "NM", "UT", "WY", "AK", "CA", "HI", "OR", "WA"), "West",
+                    ifelse(df$Dispute.Unit.State %in% c("VI", "GU", "PR"), "US Island Areas", "Other")))))
+
+
+# Create a variable for RTW state status
+df$RTW <- ifelse(df$Dispute.Unit.State %in% c("AL", "AZ", "AR", "FL", "GA", "GU", "ID", "IN", 
+                             "IA", "KS", "KY", "LA", "MS", "NE", "NV", "NC", 
+                             "ND", "OK", "SC", "SD", "TN", "TX", "UT", "VA", 
+                             "WV", "WI", "WY"), 1, 0)
+
+# Create a binary variable for whether the election was won or loss in favor of unions
+df <- df %>% 
+  mutate(Election.Won = ifelse(Cert.of.Rep..Win. == "WON", 1, ifelse(Cert.of.Results..Loss. == "LOSS", 0, NA_character_)))
+
+# Create a variable for total number of votes supporting unionization
+df <- df %>% mutate(
+    Votes.For = Votes.for.Labor.Org.1 + Votes.for.Labor.Org.2 + Votes.For.Labor.Org3 )
+
+# Create a variable for the percentage of votes in favor of, against, or abstained from unionization election
+df <- df %>%
+  mutate(
+    Prop.Support = round(Votes.For / Num.Eligible.Voters, 3),
+    Prop.Against = round(Valid.Votes.Against / Num.Eligible.Voters, 3),
+    Prop.Abstained = round((Num.Eligible.Voters - (Valid.Votes.Against + Votes.For)) / Num.Eligible.Voters, 3) )
+
+```
+
+```{r}
+
+# Restrict to 2019-2024 and 50 US states + DC
+df <- df %>% filter(!Region %in% c("US Island Areas", "Other"), Unionized.Year >= 2019)
+
+```
+
+# Union Election Analysis
+
+```{r}
+
+# Number of union elections held, number (and %) of elections won by year 
+tab0 <- df %>%
+  group_by(Unionized.Year) %>%
+  summarise(
+    Total.Elections = n(),
+    Elections.Won = sum(Election.Won == 1, na.rm = TRUE),
+    Percent.Won = round((Elections.Won / Total.Elections) * 100, 2))
+
+
+```
+
+```{r}
+
+# Number of union elections held, number (and %) of elections won by region and year 
+tab1 <- df %>%
+  group_by(Unionized.Year, Region) %>%
+  summarise(
+    Total.Elections = n(),
+    Elections.Won = sum(Election.Won == 1, na.rm = TRUE),
+    Percent.Won = round((Elections.Won / Total.Elections) * 100, 2))
+
+chart1 <- tab1 %>%
+  select(Unionized.Year, Region, Elections.Won) %>%
+  pivot_wider(
+    names_from = Region,
+    values_from = Elections.Won
+  )
+
+```
+```{r}
+
+# Percentage of votes for, against, and abstained from unionization election by year and region 
+tab2 <- df %>%
+  group_by(Unionized.Year, Region) %>%
+  summarise(
+    Total.Votes.For = sum(Votes.For, na.rm = TRUE),
+    Total.Votes.Against = sum(Valid.Votes.Against, na.rm = TRUE),
+    Total.Votes.Abstained = sum((Num.Eligible.Voters - Valid.Votes.Against - Votes.For), na.rm = TRUE),
+    Percent.For = round((Total.Votes.For / sum(Num.Eligible.Voters)) * 100, 2),
+    Percent.Against = round((Total.Votes.Against / sum(Num.Eligible.Voters)) * 100, 2),
+    Percent.Abstained = round((Total.Votes.Abstained / sum(Num.Eligible.Voters)) * 100, 2)
+    ) %>% 
+    select(-starts_with("Total"))
+
+chart2 <- tab2 %>% filter(Region == "South") %>% select(-Region)
+
+```
+
+
+
+```{r}
+
+# View all charts and tables
+tab0
+# tab1
+# tab2
+chart1
+chart2
+
+```
+
+## Save and export data for charts
+```{r}
+
+# Save tables to an Excel workbook
+num_charts = 2
+wb <- createWorkbook()
+
+for (i in 1:num_charts){
+  table_name <- paste0("chart", i)
+  addWorksheet(wb, table_name)
+  writeData(wb, sheet = table_name, x = get(table_name), startRow = 1)
+}
+  
+
+# Save after all tabs are added to workbook
+saveWorkbook(wb, "unionization_analysis_8.13.xlsx", overwrite = TRUE)
+
+```
+
+
+# Industry distributions in the South
+
+## Import CPS data
+```{r, warning=FALSE, include=FALSE}
+
+# NOTE: To load data, you must download both the extract's data and the DDI
+# and also set the working directory to the folder with these files (or change the path below).
+
+if (!require("ipumsr")) stop("Reading IPUMS data into R requires the ipumsr package. It can be installed using the following command: install.packages('ipumsr')")
+
+ddi <- read_ipums_ddi("cps_00026.xml") # Contains sample for 2024
+data <- read_ipums_micro(ddi)
+df <-  data.frame(data) %>% 
+  select(c("COUNTY", "STATEFIP", "LABFORCE", "IND90LY","OCC10LY", "YEAR", "ASECWT"))
+
+
+```
+
+
+## Cleaning
+
+### Recode values 
+```{r, warning=FALSE}
+
+# Replace values with labels where applicable
+  ## Note: Does not work on COUNTY and METFIPS, just gets them to character
+vars_to_convert <- c("COUNTY","STATEFIP", "LABFORCE") 
+
+df[vars_to_convert] <- lapply(df[vars_to_convert], function(x) {
+  as.character(haven::as_factor(x))
+})
+
+
+```
+
+
+#### Geographic variables
+```{r}
+
+# State
+df$STATE <- state.abb[match(df$STATEFIP, state.name)]
+df <- select(df, -STATEFIP)
+
+# Region
+df$REGION <- ifelse(df$STATE %in% c("CT", "ME", "MA", "NH", "RI", "VT", "NJ", "NY", "PA"), "Northeast",
+                    ifelse(df$STATE %in% c("IL", "IN", "MI", "OH", "WI", "IA", "KS", "MN", "MO", "NE", "ND", "SD"), "Midwest",
+                    ifelse(df$STATE %in% c("DE", "DC", "FL", "GA", "MD", "NC", "SC", "VA", "WV", "AL", "KY", "MS", "TN", "AR", "LA", "OK", "TX"), "South",
+                    ifelse(df$STATE %in% c("AZ", "CO", "ID", "MT", "NV", "NM", "UT", "WY", "AK", "CA", "HI", "OR", "WA"), "West",
+                    ifelse(df$STATE %in% c("VI", "GU", "PR"), "US Island Areas", "Other")))))
+
+
+```
+
+### Occupation Group labels
+```{r}
+
+# Add granular OCC10LY labels to a new variable 
+ ## https://www.bls.gov/cps/cenocc2010.htm & https://cps.ipums.org/cps-action/variables/OCC2010#codes_section
+
+df$OCC <- as.character(haven::as_factor(df$OCC10LY))
+df$OCC <- ifelse(df$OCC == "Not in universe", NA_character_, df$OCC)
+df <- df %>% mutate(OCC10LY = as.integer(OCC10LY))
+
+# Replace occupation codes with grouped labels
+df <- df %>%
+  mutate(OCC_GROUP = case_when(
+    OCC10LY == 0 ~ "NA",
+    between(OCC10LY, 10, 950) ~ "Management, business, and financial operations occupations",
+    between(OCC10LY, 1000, 1240) ~ "Computer and mathematical occupations",
+    between(OCC10LY, 1300, 1560) ~ "Architecture and engineering occupations",
+    between(OCC10LY, 1600, 1980) ~ "Life, physical, and social science occupations",
+    between(OCC10LY, 2000, 2060) ~ "Community and social service occupations", #3
+    between(OCC10LY, 2100, 2160) ~ "Legal occupations",
+    between(OCC10LY, 2200, 2550) ~ "Education, training, and library occupations",
+    between(OCC10LY, 2600, 2960) ~ "Arts, design, entertainment, sports, and media occupations",
+    between(OCC10LY, 3000, 3540) ~ "Healthcare practitioners and technical occupations",
+    between(OCC10LY, 3600, 3655) ~ "Healthcare support occupations",
+    between(OCC10LY, 3700, 3955) ~ "Protective service occupations",
+    between(OCC10LY, 4000, 4160) ~ "Food preparation and serving related occupations", #7
+    between(OCC10LY, 4200, 4250) ~ "Building and grounds cleaning and maintenance occupations",
+    between(OCC10LY, 4300, 4650) ~ "Personal care and service occupations",
+    between(OCC10LY, 4700, 4965) ~ "Sales and related occupations",
+    between(OCC10LY, 5000, 5940) ~ "Office and administrative support occupations",
+    between(OCC10LY, 6000, 6130) ~ "Farming, fishing, and forestry occupations", #10
+    between(OCC10LY, 6200, 6940) ~ "Construction and extraction occupations",
+    between(OCC10LY, 7000, 7630) ~ "Installation, maintenance, and repair occupations",
+    between(OCC10LY, 7700, 8965) ~ "Production occupations",
+    between(OCC10LY, 9000, 9750) ~ "Transportation and material moving occupations",
+    between(OCC10LY, 9800, 9839) ~ "Military",
+    TRUE ~ "NA"
+  )) %>% select(-OCC10LY)
+
+
+```
+
+### Industry Group labels
+```{r}
+
+# Add granular IND90LY labels to a new variable 
+  ## https://cps.ipums.org/cps-action/variables/IND1990
+
+df$IND <- as.character(haven::as_factor(df$IND90LY))
+df$IND <- ifelse(df$IND %in% c("NIU", "Not in universe"), NA_character_, df$IND)
+df <- df %>% mutate(IND90LY = as.integer(IND90LY))
+
+# Replace industry codes with grouped labels
+df <- df %>%
+  mutate(IND_GROUP = case_when(
+    IND90LY == 0 ~ "NA",
+    between(IND90LY, 10, 32) ~ "Agriculture, Forestry, and Fisheries",
+    between(IND90LY, 40, 50) ~ "Mining",
+    IND90LY == 60 ~ "Construction",
+    between(IND90LY, 100, 392) ~ "Manufacturing",
+    IND90LY == 471 ~ "Sanitary Services*",
+    between(IND90LY, 400, 470) ~ "Transportation, Communications, and Other Public Utilities",
+    IND90LY == 472 ~ "Transportation, Communications, and Other Public Utilities",
+    between(IND90LY, 500, 571) ~ "Wholesale Trade",
+    between(IND90LY, 580, 691) ~ "Retail Trade",
+    between(IND90LY, 700, 712) ~ "Finance, Insurance, and Real Estate",
+    between(IND90LY, 721, 760) ~ "Business and Repair Services",
+    between(IND90LY, 761, 791) ~ "Personal Services",
+    between(IND90LY, 800, 810) ~ "Entertainment and Recreation Services",
+    between(IND90LY, 812, 893) ~ "Professional and Related Services",
+    between(IND90LY, 900, 932) ~ "Public Administration",
+    between(IND90LY, 940, 960) ~ "Active Duty Military",
+    IND90LY == 992 ~ "Last Worked 1984 or earlier",
+    IND90LY == 999 ~ "Unknown",
+    TRUE ~ "NA"
+  )) %>% select(-IND90LY)
+
+
+```
+
+
+### Filter the dataset to all workers
+```{r}
+
+df <- df %>%
+  # Currently in labor force, https://cps.ipums.org/cps-action/variables/LABFORCE#codes_section
+  filter(LABFORCE == "Yes, in the labor force") %>%  # Removes over two thirds of original sample (68%, 46330 obs remaining)
+  select(-LABFORCE)
+
+```
+
+
+## Analysis of industry and occupation distribution in southern states
+```{r}
+
+total_southern_workers <- df %>% filter(YEAR == 2024) %>% 
+  filter(REGION == "South") %>%
+  summarise(total_workers = sum(ASECWT, na.rm = TRUE)) %>% 
+  pull(total_workers)
+
+```
+
+```{r}
+
+ind_dist <- df %>% 
+  filter(REGION == "South") %>%
+  group_by(IND_GROUP) %>%
+  summarise(num_Southern_workers = sum(ASECWT, na.rm = TRUE), 
+            perc_Southern_workers = num_Southern_workers/total_southern_workers * 100) %>%
+  arrange(desc(perc_Southern_workers))
+
+ind_dist
+
+write.csv(ind_dist, "southern_industries_2024.csv")
+
+```
+
+```{r}
+
+
+occ_dist <- df %>%
+  filter(REGION == "South") %>%
+  group_by(OCC_GROUP) %>%
+  summarise(num_Southern_workers = sum(ASECWT, na.rm = TRUE), 
+            perc_Southern_workers = num_Southern_workers/total_southern_workers * 100) %>%
+  arrange(desc(perc_Southern_workers))
+
+occ_dist
+
+write.csv(occ_dist, "southern_occupations_2024.csv")
+
+```
