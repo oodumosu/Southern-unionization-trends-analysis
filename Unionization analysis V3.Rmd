@@ -190,7 +190,8 @@ tab0
 # tab2
 chart1
 chart2
-
+write.csv(chart1, "figure1.csv")
+write.csv(chart2, "figure2.csv")
 ```
 
 ## Save and export data for charts
@@ -226,7 +227,7 @@ if (!require("ipumsr")) stop("Reading IPUMS data into R requires the ipumsr pack
 ddi <- read_ipums_ddi("cps_00026.xml") # Contains sample for 2024
 data <- read_ipums_micro(ddi)
 df <-  data.frame(data) %>% 
-  select(c("COUNTY", "STATEFIP", "LABFORCE", "IND90LY","OCC10LY", "YEAR", "ASECWT"))
+  select(c("COUNTY", "STATEFIP", "LABFORCE", "IND90LY", "YEAR", "ASECWT"))
 
 
 ```
@@ -266,47 +267,6 @@ df$REGION <- ifelse(df$STATE %in% c("CT", "ME", "MA", "NH", "RI", "VT", "NJ", "N
 
 ```
 
-### Occupation Group labels
-```{r}
-
-# Add granular OCC10LY labels to a new variable 
- ## https://www.bls.gov/cps/cenocc2010.htm & https://cps.ipums.org/cps-action/variables/OCC2010#codes_section
-
-df$OCC <- as.character(haven::as_factor(df$OCC10LY))
-df$OCC <- ifelse(df$OCC == "Not in universe", NA_character_, df$OCC)
-df <- df %>% mutate(OCC10LY = as.integer(OCC10LY))
-
-# Replace occupation codes with grouped labels
-df <- df %>%
-  mutate(OCC_GROUP = case_when(
-    OCC10LY == 0 ~ "NA",
-    between(OCC10LY, 10, 950) ~ "Management, business, and financial operations occupations",
-    between(OCC10LY, 1000, 1240) ~ "Computer and mathematical occupations",
-    between(OCC10LY, 1300, 1560) ~ "Architecture and engineering occupations",
-    between(OCC10LY, 1600, 1980) ~ "Life, physical, and social science occupations",
-    between(OCC10LY, 2000, 2060) ~ "Community and social service occupations", #3
-    between(OCC10LY, 2100, 2160) ~ "Legal occupations",
-    between(OCC10LY, 2200, 2550) ~ "Education, training, and library occupations",
-    between(OCC10LY, 2600, 2960) ~ "Arts, design, entertainment, sports, and media occupations",
-    between(OCC10LY, 3000, 3540) ~ "Healthcare practitioners and technical occupations",
-    between(OCC10LY, 3600, 3655) ~ "Healthcare support occupations",
-    between(OCC10LY, 3700, 3955) ~ "Protective service occupations",
-    between(OCC10LY, 4000, 4160) ~ "Food preparation and serving related occupations", #7
-    between(OCC10LY, 4200, 4250) ~ "Building and grounds cleaning and maintenance occupations",
-    between(OCC10LY, 4300, 4650) ~ "Personal care and service occupations",
-    between(OCC10LY, 4700, 4965) ~ "Sales and related occupations",
-    between(OCC10LY, 5000, 5940) ~ "Office and administrative support occupations",
-    between(OCC10LY, 6000, 6130) ~ "Farming, fishing, and forestry occupations", #10
-    between(OCC10LY, 6200, 6940) ~ "Construction and extraction occupations",
-    between(OCC10LY, 7000, 7630) ~ "Installation, maintenance, and repair occupations",
-    between(OCC10LY, 7700, 8965) ~ "Production occupations",
-    between(OCC10LY, 9000, 9750) ~ "Transportation and material moving occupations",
-    between(OCC10LY, 9800, 9839) ~ "Military",
-    TRUE ~ "NA"
-  )) %>% select(-OCC10LY)
-
-
-```
 
 ### Industry Group labels
 ```{r}
@@ -380,21 +340,5 @@ ind_dist <- df %>%
 ind_dist
 
 write.csv(ind_dist, "southern_industries_2024.csv")
-
-```
-
-```{r}
-
-
-occ_dist <- df %>%
-  filter(REGION == "South") %>%
-  group_by(OCC_GROUP) %>%
-  summarise(num_Southern_workers = sum(ASECWT, na.rm = TRUE), 
-            perc_Southern_workers = num_Southern_workers/total_southern_workers * 100) %>%
-  arrange(desc(perc_Southern_workers))
-
-occ_dist
-
-write.csv(occ_dist, "southern_occupations_2024.csv")
 
 ```
